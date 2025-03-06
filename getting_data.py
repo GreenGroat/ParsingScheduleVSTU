@@ -265,22 +265,24 @@ def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, 
                 # Вычисляем последнюю возможную строку дня
                 max_last_lesson_line = list(merge.cells)[0][0] - (list(merge.cells)[0][0] - start_values[0]) % day_len + day_len + week_index(list(merge.cells)[0][0], start_values, day_len)
                 for row in range(list(merge.cells)[0][0], max_last_lesson_line):
-                    row += week_index(row, start_values, day_len)
                     for column in range(list(merge.cells)[0][1], list(merge.cells)[-1][1] + 1):
                         if sheet.cell(row=row, column=column).value:
                             # print(column, row, sheet.cell(row=row, column=column).value)
                             lesson_info.append(sheet.cell(row=row, column=column).value)    # Записываем всю собранную информацию
 
                     # Если строка последняя в "паре", проверяем полноту собранной информации
-                    if (row % (day_len // lessons_at_day)) == 0 and check_full_day(lesson_info):
+                    if (row % (day_len // lessons_at_day)) == week_index(row, start_values, day_len) and check_full_day(lesson_info):
                         # Вычисляем: строку начала дня, порядковый номер дня недели и номера пар, в которые попадает предмет (знаем строку начала пары, знаем строку конца)
                         start_day_num = row - (row - start_values[0]) % day_len + week_index(row, start_values, day_len)
+                        day = list([(k if k <= lessons_at_day else k - lessons_at_day, v[1]["range"][0]) for k, v in
+                                    enumerate(sorted(dates.items(), key=lambda z: z[0]), start=1) if v[1]['range'][0] <= row <= v[1]['range'][1]])[0]
+                        day_num, start_day_num = day[0], day[1]
                         # print(start_day_num)
-                        day_num = list(k if k <= lessons_at_day else k - lessons_at_day for k, v in enumerate(sorted(dates.keys()), start=1) if v == start_day_num)[0]
+                        # day_num = list(k if k <= lessons_at_day else k - lessons_at_day for k, v in enumerate(sorted(dates.keys()), start=1) if v == start_day_num)[0]
                         lessons = list([k for k, l_row in enumerate(range(start_day_num, start_day_num + day_len, (day_len // lessons_at_day)), start=1) if l_row in range(list(merge.cells)[0][0], row)])
                         # print(day_num)
                         # print(lessons)
-                        # print(start_day_num, day_num, days, sheet.cell(*list(merge.cells)[0]).value, list(merge.cells)[0])
+                        # print(start_day_num, day_num, sheet.cell(*list(merge.cells)[0]).value, list(merge.cells)[0])
 
                         # lecture type
                         if merge.size['columns'] > group_len:
