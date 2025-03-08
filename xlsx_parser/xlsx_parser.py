@@ -1,18 +1,30 @@
 from openpyxl import load_workbook
-import inspect
-from openpyxl.worksheet.merge import MergedCellRange, MergeCells
 from openpyxl.worksheet.worksheet import Worksheet
-from openpyxl.utils import range_boundaries
+
 from fnmatch import fnmatch
-from pprint import pprint
+
+from convert_xls_to_xlsx import convert_xls_to_xlsx
 
 import copy
 
+
 def get_schedule_start_row_column():
+    """
+    Main parser block.
+    Return start schedule start values. Dates and Groups not included
+    :return: row_id, column_id
+    """
+
     for row_id, row in enumerate(list(sheet.rows), start=1):
         for column_id, column in enumerate(list(sheet.columns)[:15], start=1):
             if sheet.cell(row=row_id, column=column_id).value and sheet.cell(row=row_id, column=column_id).value.replace(" ", "") == "1-2":
                 return row_id, column_id
+
+
+def week_index(row, start_values, day_len):
+
+    # Getting week index
+    return int(row > start_values[0] + 6*day_len)
 
 
 def is_lesson_name(text):
@@ -22,15 +34,11 @@ def is_lesson_name(text):
     else: return False
 
 
-def week_index(row, start_values, day_len):
-    return int(row > start_values[0] + 6*day_len)
-
-
 def is_teacher(text):
-    # Дописать получение всех преподов с бд заместо получения с json
+    # Дописать получение всех преподов с бд заместо получения с json (или похуй). В идеале, дописать норм, а не так, костылями
     if type(text) == str and not all(letter == letter.upper() for letter in text) and not any(letter.isnumeric() for letter in text):
         import json
-        with open("teachers.json", 'rb') as file:
+        with open("teachers/teachers.json", 'rb') as file:
             all_teachers = list(json.load(file))
 
         if "." in text.split()[0] and "." not in text.split()[1]:
@@ -43,6 +51,7 @@ def is_teacher(text):
 
 
 def is_number_audience(text):
+    # Вторая функция, написанная костылями. В идеале как-то объединить, но из-за отсутствия шаблона - невозможно
     text = str(text).replace('-', '').replace(' ', '')
     if (
         type(text) == int or
@@ -55,29 +64,8 @@ def is_number_audience(text):
         return False
 
 
-def sort_merged_ranges(ranges):
-    # Преобразуем в кортежи с начальными строками и столбцами
-    ranges_tuples = []
-    for merged_range in ranges:
-        start_cell = merged_range.min_row, merged_range.min_col
-        ranges_tuples.append((start_cell, merged_range))
-
-    # Сортируем по строкам и столбцам
-    sorted_ranges = sorted(ranges_tuples, key=lambda x: (x[0][0], x[0][1]))
-
-    # Возвращаем отсортированный список объектов MergedCellRange
-    return [range_1[1] for range_1 in sorted_ranges]
-
-
-def get_schedule_merged():
-    merged_schedule = []
-    start_schedule_values = get_schedule_start_row_column()
-    for merge in list(sheet.merged_cells):
-
-        if list(merge.cells)[0][0] >= start_schedule_values[0] and list(merge.cells)[0][1] > start_schedule_values[1]:
-            merged_schedule.append(merge)
-
-    return sort_merged_ranges(merged_schedule)
+def check_full_day(lesson_info: list):
+    return any(item for item in lesson_info if is_lesson_name(item)) and (any(item for item in lesson_info if is_teacher(item))) and any(item for item in lesson_info if is_number_audience(item))
 
 
 def check_is_the_group(value):
@@ -87,14 +75,29 @@ def check_is_the_group(value):
             return True
 
 
+def check_num_lesson_at_day(start_values, day_len):
+    lessons = set()
+    for row in range(start_values[0], start_values[0] + day_len):
+        if sheet.cell(row, start_values[1]).value:
+            lessons.add(sheet.cell(row, start_values[1]).value.replace(" ", ""))
+    return len(lessons)
+
+
 def get_group_column():
+    """
+    Another one important function. Return groups ids with info for lesson groups detecting
+    :return: groups dict, length one group
+    """
+
     group_column = {}
     column_group = {}  # "Развернутый" словарь group_column
 
     # Получаем словарик со всеми группами и номерами "их" столбцов
     for merge in list(sheet.merged_cells):
-        if sheet.cell(*list(merge.cells)[0]).value and type(sheet.cell(*list(merge.cells)[0]).value) == str and check_is_the_group(sheet.cell(*list(merge.cells)[0]).value.replace(" ", "")):
-            if (str(sheet.cell(*list(merge.cells)[0]).value).replace(" ", "") not in group_column.keys()) or (list(merge.cells)[0][0] < list(group_column[str(sheet.cell(*list(merge.cells)[0]).value).replace(" ", "")].cells)[0][0]):
+        if sheet.cell(*list(merge.cells)[0]).value and type(sheet.cell(*list(merge.cells)[0]).value) == str and \
+                check_is_the_group(sheet.cell(*list(merge.cells)[0]).value.replace(" ", "")):
+            if (str(sheet.cell(*list(merge.cells)[0]).value).replace(" ", "") not in group_column.keys()) or \
+                    (list(merge.cells)[0][0] < list(group_column[str(sheet.cell(*list(merge.cells)[0]).value).replace(" ", "")].cells)[0][0]):
                 group_column[str(sheet.cell(*list(merge.cells)[0]).value).replace(" ", "")] = merge
 
     # Форматируем словарь для более удобной дальнейшей работы (Формат эквивалентен словарю с днями)
@@ -111,6 +114,10 @@ def get_group_column():
 
 
 def get_schedule_days_ranges():
+    """
+    Another one important function. Return dates with info for lesson dates detecting
+    :return: days dict, length day
+    """
     start_values = get_schedule_start_row_column()
     days = {}
 
@@ -150,20 +157,49 @@ def get_schedule_days_ranges():
     return days, day_len
 
 
-def check_full_day(lesson_info: list):
-    return any(item for item in lesson_info if is_lesson_name(item)) and (any(item for item in lesson_info if is_teacher(item))) and any(item for item in lesson_info if is_number_audience(item))
+def get_lesson_info_dict(lesson_info, lesson_type, subgroup, bmt=False):
+    """
+    Formatting lesson information to dict type
+    :param lesson_info:
+    :param lesson_type:
+    :param subgroup:
+    :param bmt:
+    :return: lesson_dict:dict
+    """
+    lesson_dict_info_sample = {
+        "lesson_name": "",
+        "lesson_audience": '',
+        "lesson_teacher": '',
+        "lesson_subgroup": [],
+        "lesson_type": '',
+        "lesson_bmt": bmt,
+        "lesson_description": ""
 
+    }
 
-def check_num_lesson_at_day(start_values, day_len):
-    lessons = set()
-    for row in range(start_values[0], start_values[0] + day_len):
-        if sheet.cell(row, start_values[1]).value:
-            lessons.add(sheet.cell(row, start_values[1]).value.replace(" ", ""))
-    return len(lessons)
+    for item in lesson_info:
+        if is_lesson_name(item):
+            lesson_dict_info_sample['lesson_name'] = str(item)
+        elif is_teacher(item):
+            lesson_dict_info_sample[
+                'lesson_teacher'] += f"{str(item).strip() if str(item).strip() not in lesson_dict_info_sample['lesson_teacher'] else ''} "
+        elif is_number_audience(item):
+            lesson_dict_info_sample[
+                'lesson_audience'] += f"{str(item).strip() if str(item).strip() not in lesson_dict_info_sample['lesson_audience'] else ''} "
+        else:
+            lesson_dict_info_sample[
+                'lesson_description'] += f"{str(item).strip() if str(item).strip() not in lesson_dict_info_sample['lesson_description'] else ''} "
+
+        lesson_dict_info_sample['lesson_type'] = lesson_type
+        lesson_dict_info_sample['lesson_subgroup'] = subgroup
+
+    return lesson_dict_info_sample
 
 
 def init_schedule(groups, dates, start_values, day_len):
     """
+    initialisation schedule dict with empty arrays
+
     all_schedule_type:
     { "GROUP_NAME": {
                         "NUM_WEEK": {
@@ -171,7 +207,7 @@ def init_schedule(groups, dates, start_values, day_len):
                                                         "name": str, # weekday name
                                                         "dates": list, # weekday dates on semester
                                                         "lessons":
-                                                                    {"lesson_start_time":
+                                                                    {"lesson_num":
                                                                                 [
                                                                                     {
                                                                                         "lesson_name": str,
@@ -197,77 +233,64 @@ def init_schedule(groups, dates, start_values, day_len):
 
     all_schedule = {}
 
+    # Получаем количество предметов в дне
     lessons_time_start = list(range(1, 9))
     num_lessons = check_num_lesson_at_day(start_values, day_len)
 
+    # Заполняем порядковым номером дня шаблонный список
     num_lessons_times = {}
     for lesson_time in lessons_time_start[:num_lessons]:
         num_lessons_times[lesson_time] = []
 
-    # init all_schedule
+    # Полностью заполняем пустой шаблон расписания имеющимися данными
     for group_start_column in groups.keys():
         if groups[group_start_column]['name'] not in all_schedule.keys():
             all_schedule[groups[group_start_column]['name']] = {"1": {}, "2": {}}
+
             for k, day in enumerate(sorted(dates.keys()), start=1):
                 if not all_schedule[groups[group_start_column]['name']][str(week_index(day, start_values, day_len) + 1)]:
                     all_schedule[groups[group_start_column]['name']][str(week_index(day, start_values, day_len) + 1)] = {}
                 all_schedule[groups[group_start_column]['name']][str(week_index(day, start_values, day_len) + 1)][len(all_schedule[groups[group_start_column]['name']][str(week_index(day, start_values, day_len) + 1)]) + 1] = \
                     {
-                     # "name": dates[day]['name'],
-                     # "dates": dates[day]["days"],
+                     "name": dates[day]['name'],
+                     "dates": dates[day]["days"],
                      'lessons': copy.deepcopy(num_lessons_times)}
 
     return all_schedule
 
 
-def get_lesson_info_dict(lesson_info, lesson_type, subgroup):
-    lesson_dict_info_sample = {
-        "lesson_name": "",
-        "lesson_audience": '',
-        "lesson_teacher": '',
-        "lesson_subgroup": [],
-        "lesson_type": '',
-        "lesson_bmt": False,
-        "lesson_description": ""
-
-    }
-
-    for item in lesson_info:
-        if is_lesson_name(item):
-            lesson_dict_info_sample['lesson_name'] = str(item)
-        elif is_teacher(item):
-            lesson_dict_info_sample[
-                'lesson_teacher'] += f"{str(item) if str(item) not in lesson_dict_info_sample['lesson_teacher'] else ''} "
-        elif is_number_audience(item):
-            lesson_dict_info_sample[
-                'lesson_audience'] += f"{str(item) if str(item) not in lesson_dict_info_sample['lesson_audience'] else ''} "
-        else:
-            lesson_dict_info_sample[
-                'lesson_description'] += f"{str(item) if str(item) not in lesson_dict_info_sample['lesson_description'] else ''} "
-
-        lesson_dict_info_sample['lesson_type'] = lesson_type
-        lesson_dict_info_sample['lesson_subgroup'] = subgroup
-
-
-    return lesson_dict_info_sample
-
-
 def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, day_len: int):
+    """
+    MAIN FUNCTION GETTING SCHEDULE
+
+    :param start_values:
+    :param groups:
+    :param group_len:
+    :param dates:
+    :param day_len:
+    :return:
+    """
+
+    # Получаем количество пар в дне
     lessons_at_day = check_num_lesson_at_day(start_values, day_len)
 
+    # Получаем заполненный группами шаблон расписания
     all_schedule = init_schedule(groups, dates, start_values, day_len)
+
     for merge in list(sheet.merged_cells):
         lesson_info = []
 
-        # Пробегаемся по каждой объединенной ячейке и проверяем, лежит ли она в нужном нам диапазоне
+        # Пробегаемся по каждой объединенной ячейке и проверяем, лежит ли она в нужном нам диапазоне (не попадает в даты и группы)
         if list(merge.cells)[0][1] >= start_values[0] and list(merge.cells)[0][0] >= start_values[1] and sheet.cell(*list(merge.cells)[0]).value and (is_lesson_name(sheet.cell(*list(merge.cells)[0]).value)) or str(sheet.cell(*list(merge.cells)[0]).value).strip() == "ОСНОВЫ ВОЕННОЙ ПОДГОТОВКИ \n4 ЧАСА":
             if str(sheet.cell(*list(merge.cells)[0]).value).strip() != "ОСНОВЫ ВОЕННОЙ ПОДГОТОВКИ \n4 ЧАСА":
+
                 # Вычисляем последнюю возможную строку дня
                 max_last_lesson_line = list(merge.cells)[0][0] - (list(merge.cells)[0][0] - start_values[0]) % day_len + day_len + week_index(list(merge.cells)[0][0], start_values, day_len)
+
+                # Проходим по всем строкам, собирая всю информацию со столбцов из диапазона объединения ячейки предмета
                 for row in range(list(merge.cells)[0][0], max_last_lesson_line):
                     for column in range(list(merge.cells)[0][1], list(merge.cells)[-1][1] + 1):
                         if sheet.cell(row=row, column=column).value:
-                            # print(column, row, sheet.cell(row=row, column=column).value)
                             lesson_info.append(sheet.cell(row=row, column=column).value)    # Записываем всю собранную информацию
 
                     # Если строка последняя в "паре", проверяем полноту собранной информации
@@ -277,14 +300,9 @@ def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, 
                         day = list([(k if k <= lessons_at_day else k - lessons_at_day, v[1]["range"][0]) for k, v in
                                     enumerate(sorted(dates.items(), key=lambda z: z[0]), start=1) if v[1]['range'][0] <= row <= v[1]['range'][1]])[0]
                         day_num, start_day_num = day[0], day[1]
-                        # print(start_day_num)
-                        # day_num = list(k if k <= lessons_at_day else k - lessons_at_day for k, v in enumerate(sorted(dates.keys()), start=1) if v == start_day_num)[0]
                         lessons = list([k for k, l_row in enumerate(range(start_day_num, start_day_num + day_len, (day_len // lessons_at_day)), start=1) if l_row in range(list(merge.cells)[0][0], row)])
-                        # print(day_num)
-                        # print(lessons)
-                        # print(start_day_num, day_num, sheet.cell(*list(merge.cells)[0]).value, list(merge.cells)[0])
 
-                        # lecture type
+                        # TYPE lecture
                         if merge.size['columns'] > group_len:
 
                             # Генерируем словарь из имеющейся информации
@@ -297,7 +315,7 @@ def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, 
                                         if len(all_schedule[groups[group_start_column]['name']][str(week_index(row, start_values, day_len) + 1)][day_num]['lessons'][day]) - 1 not in all_schedule[groups[group_start_column]['name']][str(week_index(row, start_values, day_len) + 1)][day_num]['lessons'][day]:
                                             all_schedule[groups[group_start_column]['name']][str(week_index(row, start_values, day_len) + 1)][day_num]['lessons'][day].append(lesson_dict)
 
-                        # practice type
+                        # TYPE practice
                         elif merge.size['columns'] == group_len and (row - list(merge.cells)[0][0] + 1) == (day_len // lessons_at_day):
 
                             # Также генерируем словарь из имеющихся данных (Да-да-да, я знаю, что можно вынести в функцию, пока что так пусть будет
@@ -309,7 +327,7 @@ def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, 
                             lesson_num = lessons[0]
                             all_schedule[group][week][day_num]["lessons"][lesson_num].append(lesson_dict)
 
-                        # all labs type
+                        # TYPE all labs
                         elif merge.size['columns'] == group_len and (row - list(merge.cells)[0][0] + 1) > (day_len // lessons_at_day):
                             lessons = list([k for k, l_row in enumerate(range(start_day_num, start_day_num + day_len, (day_len // lessons_at_day)), start=1) if l_row in range(list(merge.cells)[0][0], row)])
                             lesson_dict = get_lesson_info_dict(lesson_info, 'lab 2', [2])
@@ -319,7 +337,7 @@ def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, 
                                 week = str(week_index(list(merge.cells)[0][0], start_values, day_len) + 1)
                                 all_schedule[group][week][day_num]["lessons"][lesson].append(lesson_dict)
 
-                        # subgroups labs
+                        # TYPE subgroups
                         elif merge.size['columns'] == group_len // 2 and (row - list(merge.cells)[0][0] + 1) > (day_len // lessons_at_day):
                             subgroup = 0 if list(merge.cells)[0][1] in groups.keys() else 1
                             group = groups[list(merge.cells)[0][1]]['name'] if list(merge.cells)[0][1] in groups.keys() else groups[list(merge.cells)[0][1] - group_len // 2]['name']
@@ -334,33 +352,28 @@ def get_lessons(start_values: tuple, groups: dict, group_len: int, dates: dict, 
                         # Останавливаем цикл с поиском строк, переходим к следующему мержу
                         break
 
+            else:
+                max_last_lesson_line = list(merge.cells)[0][0] - list(merge.cells)[0][0] % day_len + start_values[0] + day_len
+                for row in range(list(merge.cells)[0][0], max_last_lesson_line):
+                    for column in range(list(merge.cells)[0][1], list(merge.cells)[-1][1] + 1):
+                        if sheet.cell(row=row, column=column).value:
+                            lesson_info.append(sheet.cell(row=row, column=column).value.split('\n')[0])
+                    if (row % (day_len // lessons_at_day)) == week_index(row, start_values, day_len) and any(item for item in lesson_info if is_lesson_name(item.split('\n')[0])) and any(item for item in lesson_info if is_number_audience(item)):
+                        lesson_info.append("Лубчинский К.О.")
+                        lesson_dict = get_lesson_info_dict(lesson_info, "lab", [2], bmt=True)
 
+                        day = list([(k if k <= lessons_at_day else k - lessons_at_day, v[1]["range"][0]) for k, v in enumerate(sorted(dates.items(), key=lambda z: z[0]), start=1) if v[1]['range'][0] <= row <= v[1]['range'][1]])[0]
+                        day_num, start_day_num = day[0], day[1]
+                        lessons = list([k for k, l_row in enumerate(range(start_day_num, start_day_num + day_len, (day_len // lessons_at_day)), start=1) if l_row in range(list(merge.cells)[0][0], row)])
 
-            # else:
-            #     max_last_lesson_line = list(merge.cells)[0][0] - list(merge.cells)[0][0] % day_len + start_values[0] + day_len
-            #     for column in range(list(merge.cells)[0][1], list(merge.cells)[-1][1] + 1):
-            #         for row in range(list(merge.cells)[0][0], max_last_lesson_line):
-            #             if sheet.cell(row=row, column=column).value:
-            #                 lesson_info.append(sheet.cell(row=row, column=column).value)
+                        for group_start_column in sorted(groups.keys()):
+                            if group_start_column in range(list(merge.cells)[0][1], list(merge.cells)[-1][1] + 1):
+                                for day in lessons:
+                                    if len(all_schedule[groups[group_start_column]['name']][str(week_index(row, start_values, day_len) + 1)][day_num]['lessons'][day]) - 1 not in all_schedule[groups[group_start_column]['name']][str(week_index(row, start_values, day_len) + 1)][day_num]['lessons'][day]:
+                                        all_schedule[groups[group_start_column]['name']][str(week_index(row, start_values, day_len) + 1)][day_num]['lessons'][day].append(lesson_dict)
+                        break
+
     return all_schedule
-
-
-def main():
-    dates = get_schedule_days_ranges()
-    # pprint(dates)
-    groups = get_group_column()
-    start_values = get_schedule_start_row_column()
-    # pprint(groups[0])
-    # print(check_num_lesson_at_day(start_values, dates[1]))
-    a = get_lessons(start_values, *groups, *dates)
-
-    # print(is_number_audience("А-404"))
-    # print(is_teacher('ст. пр. Гилка В.В.'))
-    # pprint(init_schedule(groups[0], dates[0], start_values, dates[1]))
-    #
-    import json
-    with open('working.json', 'a', encoding='utf-8') as file:
-        json.dump(a, file, ensure_ascii=False, indent=4)
 
 
 def init_book(book_name) -> Worksheet:
@@ -369,6 +382,23 @@ def init_book(book_name) -> Worksheet:
     return sheet
 
 
-if __name__ == "__main__":
-    sheet = init_book("ОН_ФЭВТ_2 курс.xlsx")
-    main()
+def main(path_to_xls: str):
+
+    book = convert_xls_to_xlsx(path_to_xls)
+
+    global sheet
+    sheet = init_book(book)
+
+    dates = get_schedule_days_ranges()
+    groups = get_group_column()
+    start_values = get_schedule_start_row_column()
+    return get_lessons(start_values, *groups, *dates)
+
+
+
+# Пример использования
+# import json
+# schedule = main(r"..\ОН_ФЭВТ_2 курс.xls")
+# with open('schedule.json', 'a', encoding="utf-8") as file:
+#     json.dump(schedule, file, ensure_ascii=False, indent=4)
+
